@@ -52,12 +52,14 @@ github = GitHubClient()
 
 def _clone_repo(work_dir: str, branch_name: str) -> None:
     repo_url = f"https://x-access-token:{GITHUB_TOKEN_TRUST_LAYER}@github.com/{GITHUB_REPO}.git"
-    subprocess.run(
+    result = subprocess.run(
         ["git", "clone", "--depth=1", repo_url, work_dir],
-        check=True,
         capture_output=True,
         timeout=120,
     )
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace").strip()
+        raise Exception(f"git clone failed (rc={result.returncode}): {stderr[:400]}")
     subprocess.run(
         ["git", "checkout", "-b", branch_name],
         cwd=work_dir,
