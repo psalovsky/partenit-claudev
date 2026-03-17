@@ -7,7 +7,7 @@ services:
       - "127.0.0.1:8090:8090"
     volumes:
       # Авторизация Claude Code (Max) — копируется с рабочей машины
-      - ~/.claude:/root/.claude:ro
+      - ~/.claude:/root/.claude
       # Временная директория для клонов репозиториев и артефактов
       - /tmp/pipeline-work:/tmp/pipeline-work
     env_file: .env
