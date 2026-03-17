@@ -235,8 +235,8 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
 
     logger.info("Webhook: key=%s type=%r status=%r", issue_key, issue_type, status_name)
 
-    # 3. Фильтр — принимаем TRIGGER_STATUS, STATUS_MERGE, STATUS_CANCELLED
-    if status_name not in (TRIGGER_STATUS, STATUS_MERGE, STATUS_CANCELLED):
+    # 3. Фильтр — принимаем TRIGGER_STATUS, STATUS_MERGE, STATUS_CANCELLED, STATUS_DONE
+    if status_name not in (TRIGGER_STATUS, STATUS_MERGE, STATUS_CANCELLED, STATUS_DONE):
         return {"skipped": True, "reason": f"status={status_name}"}
 
     # Отмена: убиваем все активные джобы по этой задаче
@@ -256,6 +256,22 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
     # Merge jobs: only parent tasks, skip sub-tasks
     if status_name == STATUS_MERGE and is_subtask:
         return {"skipped": True, "reason": "merge trigger ignored for sub-tasks"}
+
+    # Subtask moved to Done → trigger dependent stages
+    if is_subtask and status_name == STATUS_DONE:
+        stage = get_stage(labels)
+        if stage:
+            parent_ref = fields.get("parent", {})
+            parent_key = parent_ref.get("key", "")
+            if parent_key:
+                from dependency_tracker import trigger_next_stages
+                from jira_client import JiraClient
+                _jira = JiraClient()
+                triggered = trigger_next_stages(parent_key, stage, _jira)
+                logger.info("Subtask %s Done → triggered: %s", issue_key, triggered)
+                return {"triggered": triggered, "issue_key": issue_key,
+                        "parent_key": parent_key}
+        return {"skipped": True, "reason": "subtask Done, no stage to trigger"}
 
     if is_subtask:
         stage = get_stage(labels)
