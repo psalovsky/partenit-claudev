@@ -128,7 +128,9 @@ def _run_claude_with_retry(prompt: str, work_dir: str, job: dict) -> subprocess.
             )
             _sleep_interruptible(RETRY_DELAY_MINUTES * 60, job)
             continue
-        raise Exception(f"Claude Code rc={result.returncode}: {result.stderr[:500]}")
+        out = (result.stdout or "")[:300]
+        err = (result.stderr or "")[:300]
+        raise Exception(f"Claude Code rc={result.returncode}\nstdout: {out}\nstderr: {err}")
     raise Exception(f"Claude Code failed after {MAX_RETRIES} retries")
 
 
