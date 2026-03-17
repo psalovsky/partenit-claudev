@@ -787,6 +787,32 @@ def run_code_stage(job: dict) -> None:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+def _create_stage_to_main_pr(gh: GitHubClient, issue_key: str, summary: str) -> None:
+    """After merging feature → stage, auto-create PR from stage → main."""
+    try:
+        # Check if there's already an open stage → main PR
+        existing = gh.find_pr(STAGE_BRANCH)
+        if existing:
+            logger.info("[%s] stage→main PR already exists: #%s",
+                        issue_key, existing["number"])
+            return
+
+        pr = gh.create_pr(
+            head=STAGE_BRANCH,
+            base="main",
+            title=f"Release: {issue_key} — {summary}",
+            body=(
+                f"## Auto-release from `{STAGE_BRANCH}` → `main`\n\n"
+                f"Triggered by merge of {issue_key}: {summary}\n\n"
+                "Created automatically by Trust Layer Pipeline."
+            ),
+        )
+        logger.info("[%s] created stage→main PR #%s: %s",
+                    issue_key, pr["number"], pr["html_url"])
+    except Exception as e:
+        logger.warning("[%s] failed to create stage→main PR: %s", issue_key, e)
+
+
 def run_merge_job(job: dict) -> None:
     """Triggered when parent task moves to STATUS_MERGE ('На мерж').
 
@@ -831,6 +857,11 @@ def run_merge_job(job: dict) -> None:
         )
         notify_merged(issue_key, pr_url, pr["base"]["ref"], jira_domain)
         logger.info("[%s] merged PR #%s → Done", issue_key, pr_number)
+
+        # Auto-create PR from stage → main
+        base_branch = pr["base"]["ref"]  # usually "stage"
+        if base_branch == STAGE_BRANCH:
+            _create_stage_to_main_pr(gh, issue_key, job["summary"])
 
     except Exception as e:
         logger.error("[%s] merge FAIL: %s", issue_key, e)
