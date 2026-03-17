@@ -139,6 +139,7 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
     job = {
         "job_id": job_id,
         "issue_key": issue_key,
+        "key": issue_key,  # alias used by prompts.py
         "parent_key": parent_key,
         "summary": fields.get("summary", ""),
         "description": fields.get("description", {}),
