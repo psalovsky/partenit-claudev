@@ -168,8 +168,16 @@ def run_setup_job(job: dict) -> None:
         for sub in all_subtasks:
             stage = get_stage(sub["labels"])
             if stage and not STAGE_PREREQUISITES.get(stage):
-                jira.transition(sub["key"], STATUS_IN_PROGRESS)
-                logger.info("[%s] auto-started stage %s (%s)", issue_key, stage, sub["key"])
+                ok = jira.transition(sub["key"], STATUS_IN_PROGRESS)
+                if ok:
+                    logger.info("[%s] auto-started stage %s (%s)", issue_key, stage, sub["key"])
+                else:
+                    available = jira.get_transitions(sub["key"])
+                    msg = (f"⚠️ Не могу перевести {sub['key']} в '{STATUS_IN_PROGRESS}'.\n"
+                           f"Доступные переходы: {available}")
+                    logger.warning(msg)
+                    from telegram_notifier import _send
+                    _send(msg)
 
     except Exception as e:
         logger.error("[%s] setup FAIL: %s", issue_key, e)

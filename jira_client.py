@@ -29,6 +29,18 @@ class JiraClient:
         r.raise_for_status()
         return r.json()
 
+    def get_transitions(self, key: str) -> list[str]:
+        """Return list of available transition target status names for an issue."""
+        r = httpx.get(
+            f"{self.base_url}/rest/api/3/issue/{key}/transitions",
+            headers=self.headers,
+            timeout=10,
+        )
+        if not r.is_success:
+            return []
+        return [t.get("to", {}).get("name", t["name"])
+                for t in r.json().get("transitions", [])]
+
     def transition(self, key: str, target: str) -> bool:
         r = httpx.get(
             f"{self.base_url}/rest/api/3/issue/{key}/transitions",
