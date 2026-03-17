@@ -8,7 +8,8 @@ from fastapi import FastAPI, Request, HTTPException
 import uvicorn
 
 from config import (
-    PORT, WEBHOOK_SECRET, TRIGGER_STATUS, MAX_CONCURRENT_JOBS, JIRA_DOMAIN, STATUS_MERGE,
+    PORT, WEBHOOK_SECRET, TRIGGER_STATUS, MAX_CONCURRENT_JOBS, JIRA_DOMAIN,
+    STATUS_MERGE, STATUS_CANCELLED,
 )
 from dependency_tracker import get_stage
 
@@ -48,11 +49,48 @@ def list_jobs() -> Dict[str, Any]:
     }
 
 
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> Dict[str, Any]:
+    if job_id not in jobs:
+        raise HTTPException(404, "Job not found")
+    job = jobs[job_id]
+    if job["status"] not in ("queued", "running"):
+        return {"cancelled": False, "reason": f"job is already {job['status']}"}
+    job["cancelled"] = True
+    job["status"] = "cancelled"
+    proc = job.get("process")
+    if proc:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    logger.info("Job %s cancelled via API", job_id)
+    return {"cancelled": True, "job_id": job_id}
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str) -> Dict[str, Any]:
     if job_id not in jobs:
         raise HTTPException(404, "Job not found")
     return jobs[job_id]
+
+
+def _cancel_jobs_for_issue(issue_key: str) -> list:
+    """Cancel all running/queued jobs for the given issue_key. Returns list of cancelled job IDs."""
+    cancelled = []
+    for job_id, job in jobs.items():
+        if job["issue_key"] == issue_key and job["status"] in ("queued", "running"):
+            job["cancelled"] = True
+            job["status"] = "cancelled"
+            proc = job.get("process")
+            if proc:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            cancelled.append(job_id)
+            logger.info("Cancelled job %s for %s", job_id, issue_key)
+    return cancelled
 
 
 def _run_with_tracking(job: Dict[str, Any]) -> None:
@@ -91,9 +129,15 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
 
     logger.info("Webhook: key=%s type=%r status=%r", issue_key, issue_type, status_name)
 
-    # 3. Фильтр — принимаем TRIGGER_STATUS (старт пайплайна) и STATUS_MERGE (авто-мердж)
-    if status_name not in (TRIGGER_STATUS, STATUS_MERGE):
+    # 3. Фильтр — принимаем TRIGGER_STATUS, STATUS_MERGE, STATUS_CANCELLED
+    if status_name not in (TRIGGER_STATUS, STATUS_MERGE, STATUS_CANCELLED):
         return {"skipped": True, "reason": f"status={status_name}"}
+
+    # Отмена: убиваем все активные джобы по этой задаче
+    if status_name == STATUS_CANCELLED:
+        cancelled = _cancel_jobs_for_issue(issue_key)
+        logger.info("Webhook cancel: %s → cancelled jobs: %s", issue_key, cancelled)
+        return {"cancelled": True, "issue_key": issue_key, "jobs": cancelled}
 
     ALLOWED_TYPES = ("Task", "Bug", "Story", "Sub-task", "Задача", "Баг", "История", "Подзадача")
     if issue_type not in ALLOWED_TYPES:

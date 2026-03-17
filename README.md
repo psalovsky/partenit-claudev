@@ -130,8 +130,9 @@ cp .env.example .env
 | `JIRA_EMAIL` | Your Jira account email |
 | `JIRA_API_TOKEN` | Jira API token from id.atlassian.com |
 | `JIRA_PROJECT_KEY` | Project key, e.g. `TRUST` |
-| `GITHUB_TOKEN` | Fine-grained token: Contents + Pull requests (read/write) |
-| `GITHUB_REPO` | `owner/repo` |
+| `GITHUB_TOKEN` | Fine-grained token for the **pipeline** repo (trust-layer-pipeline) |
+| `GITHUB_TOKEN_TRUST_LAYER` | Fine-grained token for the **target** repo (trust-layer) — clone + PR |
+| `GITHUB_REPO` | `owner/repo` of the target repo (trust-layer) |
 | `WEBHOOK_SECRET` | Random string — same value in Jira webhook URL |
 | `TELEGRAM_BOT_TOKEN` | From @BotFather |
 | `TELEGRAM_CHAT_ID` | Your chat ID |
@@ -146,6 +147,15 @@ STATUS_READY_FOR_TEST=Ready for Test
 STATUS_IN_TESTING=In Testing
 STATUS_MERGE=Ready to Merge
 STATUS_DONE=Done
+STATUS_CANCELLED=Cancelled
+```
+
+Retry and timeout settings:
+
+```
+MAX_RETRIES=3               # how many times to retry on rate limit
+RETRY_DELAY_MINUTES=10      # minutes to wait between retries
+JOB_TIMEOUT_MINUTES=60      # max total runtime per Claude Code call
 ```
 
 ### 2. Claude Code auth
@@ -205,6 +215,43 @@ curl https://your-domain/jobs | python3 -m json.tool
 # Specific job
 curl https://your-domain/jobs/<job_id>
 ```
+
+---
+
+## Rate limit retry
+
+Если Claude Code упирается в лимиты подписки во время генерации, пайплайн **автоматически ждёт и повторяет** попытку.
+
+Поведение:
+- Детектирует rate limit по тексту ошибки (`rate limit`, `429`, `overloaded`, `exceeded your current quota`)
+- Ждёт `RETRY_DELAY_MINUTES` (по умолчанию 10 мин) и пробует снова
+- Максимум `MAX_RETRIES` попыток (по умолчанию 3)
+- На каждую retry — уведомление в Telegram
+- Если все попытки исчерпаны — задача помечается как ошибка в Jira
+
+Прогресс внутри одной попытки не сохраняется — Claude Code стартует заново с того же промпта.
+
+---
+
+## Отмена задачи
+
+### Через Jira (рекомендуется)
+
+Переведи задачу (или подзадачу) в статус **`Cancelled`** — пайплайн получит webhook и немедленно остановит выполнение:
+- Убьёт запущенный процесс Claude Code
+- Пометит job как `cancelled`
+- Никаких изменений в GitHub не будет запушено
+
+> Убедись, что статус `Cancelled` создан в твоём Jira workflow с точным именем, указанным в `STATUS_CANCELLED`.
+
+### Через API
+
+```bash
+# Отменить конкретный job
+curl -X POST https://your-domain/jobs/<job_id>/cancel
+```
+
+Ответ: `{"cancelled": true, "job_id": "..."}` или `{"cancelled": false, "reason": "job is already done"}`.
 
 ---
 

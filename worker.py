@@ -29,6 +29,8 @@ from config import (
     GITHUB_REPO,
     STAGE_BRANCH,
     JOB_TIMEOUT_MINUTES,
+    MAX_RETRIES,
+    RETRY_DELAY_MINUTES,
     ARTIFACT_STAGES,
     CODE_STAGES,
     STATUS_DONE,
@@ -64,9 +66,12 @@ def _clone_repo(work_dir: str, branch_name: str) -> None:
     )
 
 
-def _run_claude(prompt: str, work_dir: str) -> subprocess.CompletedProcess:
-    """Run Claude Code Opus — used only for development and testing stages."""
-    return subprocess.run(
+_RATE_LIMIT_MARKERS = ("rate limit", "429", "overloaded", "exceeded your current quota")
+
+
+def _run_claude(prompt: str, work_dir: str, job: dict) -> subprocess.CompletedProcess:
+    """Run Claude Code Opus via Popen; stores process in job["process"] for cancellation."""
+    proc = subprocess.Popen(
         [
             "claude", "-p", prompt,
             "--model", "claude-opus-4-6",
@@ -74,10 +79,55 @@ def _run_claude(prompt: str, work_dir: str) -> subprocess.CompletedProcess:
             "--max-turns", "50",
         ],
         cwd=work_dir,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=JOB_TIMEOUT_MINUTES * 60,
     )
+    job["process"] = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=JOB_TIMEOUT_MINUTES * 60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise Exception(f"Claude Code timed out after {JOB_TIMEOUT_MINUTES}m")
+    finally:
+        job.pop("process", None)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def _sleep_interruptible(seconds: int, job: dict) -> None:
+    """Sleep in 5s chunks, aborting early if job is cancelled."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if job.get("cancelled"):
+            raise Exception("Cancelled during retry wait")
+        time.sleep(5)
+
+
+def _run_claude_with_retry(prompt: str, work_dir: str, job: dict) -> subprocess.CompletedProcess:
+    """Run Claude Code with automatic retry on rate limit errors."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        if job.get("cancelled"):
+            raise Exception("Cancelled")
+        result = _run_claude(prompt, work_dir, job)
+        if result.returncode == 0:
+            return result
+        err_lower = (result.stderr or "").lower()
+        is_rate_limit = any(m in err_lower for m in _RATE_LIMIT_MARKERS)
+        if is_rate_limit and attempt < MAX_RETRIES:
+            logger.warning(
+                "[%s] Rate limit hit, attempt %d/%d, waiting %dm",
+                job["issue_key"], attempt, MAX_RETRIES, RETRY_DELAY_MINUTES,
+            )
+            notify_error(
+                job["issue_key"], job.get("stage", "?"),
+                f"Rate limit — retry {attempt}/{MAX_RETRIES} через {RETRY_DELAY_MINUTES}м",
+                job.get("jira_domain", ""),
+            )
+            _sleep_interruptible(RETRY_DELAY_MINUTES * 60, job)
+            continue
+        raise Exception(f"Claude Code rc={result.returncode}: {result.stderr[:500]}")
+    raise Exception(f"Claude Code failed after {MAX_RETRIES} retries")
 
 
 def _git_changed_files(work_dir: str) -> list[str]:
@@ -227,8 +277,10 @@ def run_artifact_stage(job: dict) -> None:
         _clone_repo(work_dir, f"analysis/{issue_key.lower()}")
 
         start = time.time()
+        if job.get("cancelled"):
+            raise Exception("Cancelled")
         logger.info("[%s] Claude Code: running stage %s", issue_key, stage)
-        result = _run_claude(prompt, work_dir)
+        result = _run_claude_with_retry(prompt, work_dir, job)
         duration = int(time.time() - start)
 
         if result.returncode != 0:
@@ -323,8 +375,10 @@ def run_code_stage(job: dict) -> None:
         _clone_repo(work_dir, branch_name)
 
         start = time.time()
+        if job.get("cancelled"):
+            raise Exception("Cancelled")
         logger.info("[%s] Running Claude Code (stage=%s)", issue_key, stage)
-        result = _run_claude(prompt, work_dir)
+        result = _run_claude_with_retry(prompt, work_dir, job)
         duration = int(time.time() - start)
         logger.info("[%s] Claude Code: %ds rc=%d", issue_key, duration, result.returncode)
 
@@ -561,14 +615,9 @@ def _run_legacy_job(job: dict) -> None:
         _clone_repo(work_dir, branch_name)
 
         start = time.time()
-        result = _run_claude(prompt, work_dir)
+        result = _run_claude_with_retry(prompt, work_dir, job)
         duration = int(time.time() - start)
         logger.info("[%s] Claude Code: %ds rc=%d", issue_key, duration, result.returncode)
-
-        if result.returncode != 0:
-            raise Exception(
-                f"Claude Code rc={result.returncode}: {result.stderr[:500]}"
-            )
 
         changed = _git_changed_files(work_dir)
         if not changed:
