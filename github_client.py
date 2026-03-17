@@ -38,3 +38,29 @@ class GitHubClient:
         r.raise_for_status()
         return True
 
+    def find_pr(self, branch: str) -> dict | None:
+        """Find open PR by head branch. Returns PR dict or None."""
+        r = httpx.get(
+            f"https://api.github.com/repos/{self.repo}/pulls",
+            headers=self.headers,
+            params={"state": "open", "head": f"{self.repo.split('/')[0]}:{branch}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        prs = r.json()
+        return prs[0] if prs else None
+
+    def merge_pr(self, pr_number: int, commit_message: str) -> dict:
+        """Merge PR into its base branch. Returns merge result dict."""
+        r = httpx.put(
+            f"https://api.github.com/repos/{self.repo}/pulls/{pr_number}/merge",
+            headers=self.headers,
+            json={
+                "commit_title": commit_message,
+                "merge_method": "squash",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+

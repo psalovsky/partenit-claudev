@@ -54,6 +54,16 @@ def notify_all_done(parent_key: str, jira_domain: str) -> None:
     )
 
 
+def notify_merged(issue_key: str, pr_url: str, base_branch: str,
+                  jira_domain: str) -> None:
+    url = f"https://{jira_domain}/browse/{issue_key}"
+    _send(
+        f"🚀 <b>Смерджено в {base_branch}!</b>\n"
+        f"Задача: <a href='{url}'>{issue_key}</a>\n"
+        f"<a href='{pr_url}'>PR</a> → Done"
+    )
+
+
 def notify_error(issue_key: str, stage: str, error: str, jira_domain: str) -> None:
     url = f"https://{jira_domain}/browse/{issue_key}"
     _send(

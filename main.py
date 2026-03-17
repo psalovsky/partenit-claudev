@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, HTTPException
 import uvicorn
 
 import os
-from config import PORT, WEBHOOK_SECRET, TRIGGER_STATUS, MAX_CONCURRENT_JOBS, JIRA_DOMAIN
+from config import PORT, WEBHOOK_SECRET, TRIGGER_STATUS, MAX_CONCURRENT_JOBS, JIRA_DOMAIN, STATUS_MERGE
 from dependency_tracker import get_stage
 
 logging.basicConfig(
@@ -88,13 +88,17 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
     status_name = fields.get("status", {}).get("name", "")
     issue_type = fields.get("issuetype", {}).get("name", "")
 
-    # 3. Фильтр
-    if status_name != TRIGGER_STATUS:
-        return {"skipped": True, "reason": f"status={status_name}, need={TRIGGER_STATUS}"}
+    # 3. Фильтр — принимаем TRIGGER_STATUS (старт пайплайна) и STATUS_MERGE (авто-мердж)
+    if status_name not in (TRIGGER_STATUS, STATUS_MERGE):
+        return {"skipped": True, "reason": f"status={status_name}"}
 
     ALLOWED_TYPES = ("Task", "Bug", "Story", "Sub-task", "Задача", "Баг", "История", "Подзадача")
     if issue_type not in ALLOWED_TYPES:
         return {"skipped": True, "reason": f"type={issue_type}"}
+
+    # Merge jobs: only parent tasks, skip sub-tasks
+    if status_name == STATUS_MERGE and issue_type in ("Sub-task", "Подзадача"):
+        return {"skipped": True, "reason": "merge trigger ignored for sub-tasks"}
 
     labels = fields.get("labels", [])
     is_subtask = issue_type in ("Sub-task", "Подзадача")
@@ -136,6 +140,7 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
         "description_text": "",  # populated by worker
         "issue_type": issue_type,
         "stage": stage,
+        "trigger": status_name,
         "jira_domain": f"{JIRA_DOMAIN}.atlassian.net",
         "priority": fields.get("priority", {}).get("name", "Medium"),
         "labels": labels,

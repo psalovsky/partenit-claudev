@@ -29,6 +29,7 @@ STATUS_IN_PROGRESS = os.environ.get("STATUS_IN_PROGRESS", "In Progress")
 STATUS_DONE = os.environ.get("STATUS_DONE", "Done")
 STATUS_READY_FOR_TEST = os.environ.get("STATUS_READY_FOR_TEST", "Ready for Test")
 STATUS_IN_REVIEW = os.environ.get("STATUS_IN_REVIEW", "In Review")
+STATUS_MERGE = os.environ.get("STATUS_MERGE", "На мерж")
 
 # ── Pipeline stage labels (applied to Jira sub-tasks) ─────────────────────────
 # Label format: "pipeline:<stage>" — человек навешивает при создании подзадачи
@@ -52,4 +53,3 @@ STAGE_PREREQUISITES: dict[str, list[str]] = {
 ARTIFACT_STAGES = {STAGE_SYS_ANALYSIS, STAGE_ARCHITECTURE}
 # Этапы, которые пушат код в GitHub
 CODE_STAGES = {STAGE_DEVELOPMENT, STAGE_TESTING}
-

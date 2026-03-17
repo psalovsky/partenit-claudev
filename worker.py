@@ -9,6 +9,7 @@ from telegram_notifier import (
     notify_artifact_done,
     notify_pr_created,
     notify_all_done,
+    notify_merged,
     notify_error,
 )
 from jira_client import JiraClient
@@ -29,6 +30,7 @@ from config import (
     STATUS_DONE,
     STATUS_IN_REVIEW,
     STATUS_IN_PROGRESS,
+    STATUS_MERGE,
     JIRA_PROJECT_KEY,
     PIPELINE_LABEL_PREFIX,
     ALL_STAGES,
@@ -419,6 +421,63 @@ def run_code_stage(job: dict) -> None:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+def run_merge_job(job: dict) -> None:
+    """Triggered when parent task moves to STATUS_MERGE ('На мерж').
+
+    Finds the open PR for feature/<issue_key>, merges it into main,
+    then transitions Jira task to Done.
+    """
+    issue_key = job["issue_key"]
+    job_id = job["job_id"]
+    jira_domain = job.get("jira_domain", "")
+
+    try:
+        branch_name = f"feature/{issue_key.lower()}"
+        pr = github.find_pr(branch_name)
+
+        if not pr:
+            jira.add_comment(
+                issue_key,
+                f"⚠️ Pipeline: не найден открытый PR для ветки `{branch_name}`. "
+                "Смерджите вручную.",
+            )
+            return
+
+        pr_number = pr["number"]
+        pr_url = pr["html_url"]
+        logger.info("[%s] Merging PR #%s into %s", issue_key, pr_number, pr["base"]["ref"])
+
+        merge_result = github.merge_pr(
+            pr_number,
+            commit_message=f"{issue_key}: {job['summary']} (auto-merge)",
+        )
+
+        if not merge_result.get("merged"):
+            raise Exception(f"GitHub merge failed: {merge_result.get('message')}")
+
+        jira.transition(issue_key, STATUS_DONE)
+        jira.add_comment(
+            issue_key,
+            f"🎉 Смерджено в `{pr['base']['ref']}`!\n"
+            f"PR: {pr_url}\n"
+            f"Commit: {merge_result.get('sha', '')[:8]}",
+        )
+        notify_merged(issue_key, pr_url, pr["base"]["ref"], jira_domain)
+        logger.info("[%s] merged PR #%s → Done", issue_key, pr_number)
+
+    except Exception as e:
+        logger.error("[%s] merge FAIL: %s", issue_key, e)
+        notify_error(issue_key, "merge", str(e), jira_domain)
+        try:
+            jira.add_comment(
+                issue_key,
+                f"❌ Авто-мердж не удался: {str(e)[:400]}\n"
+                "Смерджите PR вручную и переведите задачу в Done.",
+            )
+        except Exception:
+            pass
+
+
 def run_job(job: dict) -> None:
     """Route job to the correct handler.
 
@@ -428,7 +487,9 @@ def run_job(job: dict) -> None:
     """
     stage = job.get("stage")
 
-    if stage is None:
+    if job.get("trigger") == STATUS_MERGE:
+        run_merge_job(job)
+    elif stage is None:
         run_setup_job(job)
     elif stage in ARTIFACT_STAGES:
         run_artifact_stage(job)
