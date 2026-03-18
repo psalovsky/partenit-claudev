@@ -136,6 +136,21 @@ def _clone_repo_with_branch(work_dir: str, branch_name: str, repo_cfg: dict | No
     )
 
 
+# Errors that should trigger a retry (transient / server-side)
+_RETRYABLE_MARKERS = (
+    # Rate limits
+    "rate limit", "429", "overloaded", "exceeded your current quota",
+    # Server errors
+    "500", "internal server error", "api_error",
+    "502", "bad gateway",
+    "503", "service unavailable",
+    "529", "overloaded",
+    # Network / transient
+    "connection error", "timeout", "econnreset", "econnrefused",
+    "socket hang up", "fetch failed",
+)
+
+# Longer delay for rate limits, shorter for server errors
 _RATE_LIMIT_MARKERS = ("rate limit", "429", "overloaded", "exceeded your current quota")
 
 
@@ -175,27 +190,46 @@ def _sleep_interruptible(seconds: int, job: dict) -> None:
 
 
 def _run_claude_with_retry(prompt: str, work_dir: str, job: dict) -> subprocess.CompletedProcess:
-    """Run Claude Code with automatic retry on rate limit errors."""
+    """Run Claude Code with automatic retry on transient errors.
+
+    Retries on: rate limits (429), server errors (500/502/503),
+    network issues (connection reset, timeout), API errors.
+    Rate limits get a longer delay; server errors get a shorter one.
+    """
     for attempt in range(1, MAX_RETRIES + 1):
         if job.get("cancelled"):
             raise Exception("Cancelled")
         result = _run_claude(prompt, work_dir, job)
         if result.returncode == 0:
             return result
-        err_lower = (result.stderr or "").lower()
-        is_rate_limit = any(m in err_lower for m in _RATE_LIMIT_MARKERS)
-        if is_rate_limit and attempt < MAX_RETRIES:
+
+        # Check both stdout and stderr for error markers
+        combined = ((result.stdout or "") + (result.stderr or "")).lower()
+        is_retryable = any(m in combined for m in _RETRYABLE_MARKERS)
+        is_rate_limit = any(m in combined for m in _RATE_LIMIT_MARKERS)
+
+        if is_retryable and attempt < MAX_RETRIES:
+            # Rate limits → full delay; server errors → shorter delay (2 min)
+            if is_rate_limit:
+                delay_min = RETRY_DELAY_MINUTES
+                reason = "Rate limit"
+            else:
+                delay_min = min(RETRY_DELAY_MINUTES, 2)
+                reason = "Server error"
+
             logger.warning(
-                "[%s] Rate limit hit, attempt %d/%d, waiting %dm",
-                job["issue_key"], attempt, MAX_RETRIES, RETRY_DELAY_MINUTES,
+                "[%s] %s, attempt %d/%d, waiting %dm",
+                job["issue_key"], reason, attempt, MAX_RETRIES, delay_min,
             )
             notify_error(
                 job["issue_key"], job.get("stage", "?"),
-                f"Rate limit — retry {attempt}/{MAX_RETRIES} in {RETRY_DELAY_MINUTES}m",
+                f"{reason} — retry {attempt}/{MAX_RETRIES} in {delay_min}m",
                 job.get("jira_domain", ""),
             )
-            _sleep_interruptible(RETRY_DELAY_MINUTES * 60, job)
+            _sleep_interruptible(delay_min * 60, job)
             continue
+
+        # Non-retryable error or last attempt
         out = (result.stdout or "")[:300]
         err = (result.stderr or "")[:300]
         raise Exception(f"Claude Code rc={result.returncode}\nstdout: {out}\nstderr: {err}")
