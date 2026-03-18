@@ -37,14 +37,17 @@ def _reply(chat_id: str, text: str) -> None:
 _HELP_TEXT = (
     "🤖 <b>Claudev Bot</b>\n\n"
     "<b>Commands:</b>\n"
-    "/new <code>Summary text</code> — create a Jira task and start the pipeline\n"
+    "/new <code>Summary text</code> — create a task and start the dev pipeline\n"
+    "/plan <code>Feature description</code> — create a PLAN: task "
+    "(AI breaks it into epics and tasks)\n"
     "/start <code>PROJ-123</code> — move task to In Progress (starts pipeline)\n"
     "/cancel <code>PROJ-123</code> — cancel a running task\n"
     "/status — show active pipelines and queue\n"
     "/status <code>PROJ-123</code> — show task status in Jira\n"
     "/help — this message\n\n"
-    "<b>Quick task:</b> just send <code>/new Fix login timeout on mobile</code> "
-    "and the pipeline will create a Jira task and start working on it."
+    "<b>Quick task:</b> <code>/new Fix login timeout</code> — starts coding\n"
+    "<b>Feature planning:</b> <code>/plan User auth with OAuth2</code> "
+    "— creates epics and tasks"
 )
 
 
@@ -75,6 +78,9 @@ def handle_telegram_update(update: dict) -> dict:
 
         elif command == "/new":
             return _cmd_new_task(chat_id, arg)
+
+        elif command == "/plan":
+            return _cmd_plan_task(chat_id, arg)
 
         elif command == "/start":
             return _cmd_start_task(chat_id, arg)
@@ -135,6 +141,49 @@ def _cmd_new_task(chat_id: str, summary: str) -> dict:
         f"Pipeline will pick it up automatically."
     )
     return {"ok": True, "action": "new_task", "issue_key": issue_key}
+
+
+def _cmd_plan_task(chat_id: str, description: str) -> dict:
+    """Create a PLAN: task — Claude Code will break it into epics and tasks."""
+    if not description:
+        _reply(chat_id,
+               "Usage: /plan <feature description>\n"
+               "Example: /plan User authentication with OAuth2 and social login")
+        return {"ok": True, "action": "plan_no_args"}
+
+    from jira_client import JiraClient
+    from config import JIRA_PROJECT_KEY, JIRA_DOMAIN, STATUS_IN_PROGRESS, PLAN_PREFIX
+
+    jira = JiraClient()
+    summary = f"{PLAN_PREFIX} {description}"
+
+    body = {
+        "fields": {
+            "project": {"key": JIRA_PROJECT_KEY},
+            "summary": summary,
+            "issuetype": {"name": "Task"},
+        }
+    }
+    import httpx as _httpx
+    r = _httpx.post(
+        f"{jira.base_url}/rest/api/3/issue",
+        headers=jira.headers,
+        json=body,
+        timeout=10,
+    )
+    r.raise_for_status()
+    issue_key = r.json()["key"]
+    jira_url = f"https://{JIRA_DOMAIN}.atlassian.net/browse/{issue_key}"
+
+    jira.transition(issue_key, STATUS_IN_PROGRESS)
+
+    _reply(
+        chat_id,
+        f"📝 <b>Planning task created!</b>\n"
+        f"<a href='{jira_url}'>{issue_key}</a>: {summary}\n"
+        f"Claude Code will analyze the codebase and create epics + tasks."
+    )
+    return {"ok": True, "action": "plan_task", "issue_key": issue_key}
 
 
 def _cmd_start_task(chat_id: str, issue_key: str) -> dict:

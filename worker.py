@@ -262,6 +262,205 @@ def _relaunch_subtask(sub: dict, parent_key: str, stage: str) -> None:
     logger.info("[%s] re-launched dead stage %s as job %s", parent_key, stage, job_id)
 
 
+# ── Planning job: break feature into epics and tasks ─────────────────────────
+
+def run_plan_job(job: dict) -> None:
+    """When a PLAN: task moves to In Progress: Claude Code reads the codebase
+    and breaks the feature/project into epics and tasks in Jira.
+
+    Flow:
+    1. Clone repo
+    2. Claude Code analyzes codebase + task description
+    3. Outputs JSON with epics and tasks
+    4. Pipeline creates epics and tasks in Jira
+    5. Original task → Done
+    """
+    _ensure_description_text(job)
+    issue_key = job["issue_key"]
+    job_id = job["job_id"]
+    work_dir = f"/tmp/pipeline-work/{job_id}"
+
+    try:
+        jira_domain = job.get("jira_domain", "")
+        from telegram_notifier import _send
+        _send(
+            f"📝 <b>Planning started</b>\n"
+            f"Task: <a href='https://{jira_domain}/browse/{issue_key}'>{issue_key}</a>\n"
+            f"{job['summary']}\n"
+            f"Claude Code is analyzing the codebase..."
+        )
+
+        jira.add_comment(
+            issue_key,
+            f"🤖 Planning started. Claude Code is reading the codebase "
+            f"and breaking down the feature into epics and tasks.\n"
+            f"Job: {job_id}",
+        )
+
+        from prompts import build_plan_prompt
+        prompt = build_plan_prompt(job)
+
+        repo_cfg = _get_repo_config(job)
+        os.makedirs(work_dir, exist_ok=True)
+        _clone_repo(work_dir, f"plan/{issue_key.lower()}", repo_cfg)
+
+        start = time.time()
+        if job.get("cancelled"):
+            raise Exception("Cancelled")
+
+        result = _run_claude_with_retry(prompt, work_dir, job)
+        duration = int(time.time() - start)
+
+        if result.returncode != 0:
+            raise Exception(
+                f"Claude Code rc={result.returncode}: {result.stderr[:500]}"
+            )
+
+        # Parse the JSON output
+        import json
+        output = result.stdout.strip()
+        # Try to extract JSON from the output (Claude might add text around it)
+        json_start = output.find("{")
+        json_end = output.rfind("}") + 1
+        if json_start == -1 or json_end == 0:
+            raise Exception("Claude Code did not output valid JSON")
+
+        plan = json.loads(output[json_start:json_end])
+        epics = plan.get("epics", [])
+
+        if not epics:
+            jira.add_comment(
+                issue_key,
+                "🤖 Claude Code could not break this down into epics. "
+                "Try adding more detail to the task description.",
+            )
+            jira.transition(issue_key, STATUS_DONE)
+            return
+
+        # Create epics and tasks in Jira
+        from config import JIRA_PROJECT_KEY
+        created_epics = []
+        total_tasks = 0
+
+        for epic_data in epics:
+            epic_title = epic_data.get("title", "Untitled epic")
+            epic_desc = epic_data.get("description", "")
+            tasks = epic_data.get("tasks", [])
+
+            # Create epic
+            epic_body = {
+                "fields": {
+                    "project": {"key": JIRA_PROJECT_KEY},
+                    "summary": epic_title,
+                    "description": {
+                        "version": 1,
+                        "type": "doc",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": epic_desc}],
+                        }],
+                    },
+                    "issuetype": {"name": "Epic"},
+                }
+            }
+            import httpx as _httpx
+            r = _httpx.post(
+                f"{jira.base_url}/rest/api/3/issue",
+                headers=jira.headers,
+                json=epic_body,
+                timeout=10,
+            )
+            if not r.is_success:
+                logger.warning("[%s] Failed to create epic '%s': %s",
+                               issue_key, epic_title, r.text[:200])
+                continue
+
+            epic_key = r.json()["key"]
+            created_epics.append({"key": epic_key, "title": epic_title, "tasks": []})
+
+            # Create tasks under this epic
+            for task_data in tasks:
+                task_title = task_data.get("title", "Untitled task")
+                task_desc = task_data.get("description", "")
+                task_labels = task_data.get("labels", [])
+
+                task_body = {
+                    "fields": {
+                        "project": {"key": JIRA_PROJECT_KEY},
+                        "parent": {"key": epic_key},
+                        "summary": task_title,
+                        "description": {
+                            "version": 1,
+                            "type": "doc",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{"type": "text", "text": task_desc}],
+                            }],
+                        },
+                        "issuetype": {"name": "Task"},
+                        "labels": task_labels,
+                    }
+                }
+                r = _httpx.post(
+                    f"{jira.base_url}/rest/api/3/issue",
+                    headers=jira.headers,
+                    json=task_body,
+                    timeout=10,
+                )
+                if r.is_success:
+                    task_key = r.json()["key"]
+                    created_epics[-1]["tasks"].append(task_key)
+                    total_tasks += 1
+                else:
+                    logger.warning("[%s] Failed to create task '%s': %s",
+                                   issue_key, task_title, r.text[:200])
+
+        # Build summary comment
+        summary_lines = [
+            f"🤖 **Planning complete** — {len(created_epics)} epics, "
+            f"{total_tasks} tasks created.\n",
+        ]
+        for epic in created_epics:
+            epic_url = f"https://{jira_domain}/browse/{epic['key']}"
+            summary_lines.append(
+                f"### [{epic['key']}]({epic_url}): {epic['title']}"
+            )
+            for task_key in epic["tasks"]:
+                task_url = f"https://{jira_domain}/browse/{task_key}"
+                summary_lines.append(f"  - [{task_key}]({task_url})")
+            summary_lines.append("")
+
+        summary_lines.append(
+            f"⏱ {duration // 60}m {duration % 60}s | Job: {job_id}\n\n"
+            "Move any task to **In Progress** to start the dev pipeline."
+        )
+
+        jira.add_comment(issue_key, "\n".join(summary_lines))
+        jira.transition(issue_key, STATUS_DONE)
+
+        _send(
+            f"📝 <b>Planning complete!</b>\n"
+            f"<a href='https://{jira_domain}/browse/{issue_key}'>{issue_key}</a>\n"
+            f"{len(created_epics)} epics, {total_tasks} tasks\n"
+            f"⏱ {duration // 60}m {duration % 60}s"
+        )
+        logger.info("[%s] Plan complete: %d epics, %d tasks (%ds)",
+                    issue_key, len(created_epics), total_tasks, duration)
+
+    except Exception as e:
+        logger.error("[%s] plan FAIL: %s", issue_key, e)
+        notify_error(issue_key, "planning", str(e), job.get("jira_domain", ""))
+        try:
+            jira.add_comment(
+                issue_key,
+                f"❌ Planning error: {str(e)[:500]}\nJob: {job_id}",
+            )
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 # ── Setup job: create pipeline subtasks for a parent task ────────────────────
 
 _STAGE_SUMMARIES = {
@@ -884,14 +1083,18 @@ def run_merge_job(job: dict) -> None:
 def run_job(job: dict) -> None:
     """Route job to the correct handler.
 
+    PLAN: task (no stage)   → run_plan_job: break feature into epics/tasks
     Parent task (no stage)  → run_setup_job: create subtasks, start first stages
     Sub-task artifact stage → run_artifact_stage: Claude Code writes markdown
     Sub-task code stage     → run_code_stage: Claude Code writes code + PR
     """
+    from config import PLAN_PREFIX
     stage = job.get("stage")
 
     if job.get("trigger") == STATUS_MERGE:
         run_merge_job(job)
+    elif stage is None and job.get("summary", "").startswith(PLAN_PREFIX):
+        run_plan_job(job)
     elif stage is None:
         run_setup_job(job)
     elif stage in ARTIFACT_STAGES:

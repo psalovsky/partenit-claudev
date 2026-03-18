@@ -49,6 +49,10 @@ RETRY_DELAY_MINUTES = int(os.environ.get("RETRY_DELAY_MINUTES", 10))
 # Set to "" to disable auto-transition
 AUTO_TRANSITION_ON_COMPLETE = os.environ.get("AUTO_TRANSITION_ON_COMPLETE", "In Review")
 
+# Planning pipeline: tasks with this prefix go through a different flow
+# Instead of coding, Claude Code breaks the task into epics and subtasks
+PLAN_PREFIX = os.environ.get("PLAN_PREFIX", "PLAN:")
+
 # ── Jira status names (must match your Jira workflow exactly) ─────────────────
 STATUS_CANCELLED = os.environ.get("STATUS_CANCELLED", "Cancelled")
 STATUS_TODO = os.environ.get("STATUS_TODO", "To Do")

@@ -85,6 +85,49 @@ The orchestrator LLM can be **any OpenAI-compatible API**: DeepSeek, GPT-4o-mini
 
 ---
 
+## Two pipelines
+
+Claudev has two modes depending on the task title:
+
+### Dev pipeline (default)
+Create a task like `Fix login timeout on mobile` → moves to In Progress → pipeline writes code.
+
+### Planning pipeline (`PLAN:` prefix)
+Create a task like `PLAN: User authentication with OAuth2 and social login` → moves to In Progress → Claude Code **reads the codebase**, understands the architecture, and creates a structured breakdown:
+
+```
+PLAN: User auth with OAuth2
+        |
+        v
+  Claude Code reads the codebase
+  and produces a plan:
+        |
+        +-> Epic: OAuth2 Integration
+        |     +-> Task: Add OAuth2 provider configuration
+        |     +-> Task: Implement authorization code flow
+        |     +-> Task: Add token refresh logic
+        |
+        +-> Epic: Social Login
+        |     +-> Task: Add Google OAuth provider
+        |     +-> Task: Add GitHub OAuth provider
+        |     +-> Task: Implement account linking
+        |
+        v
+  All epics and tasks are created in Jira
+  automatically. Each task has a detailed
+  description — ready to start the dev pipeline.
+```
+
+Each generated task has enough detail for Claude Code to implement it without asking questions. Just move any task to **In Progress** and the dev pipeline takes over.
+
+You can trigger planning from:
+- **Jira:** create a task with title starting with `PLAN:` and move to In Progress
+- **Telegram:** `/plan User auth with OAuth2 and social login`
+
+Configure the prefix with `PLAN_PREFIX` env var (default: `PLAN:`).
+
+---
+
 ## Quick start
 
 ```bash
@@ -202,7 +245,8 @@ curl "https://api.telegram.org/bot<YOUR_TOKEN>/setWebhook?url=https://your-app.u
 
 | Command | Description |
 |---------|-------------|
-| `/new Fix login timeout` | Create a Jira task and start the pipeline immediately |
+| `/new Fix login timeout` | Create a task and start the dev pipeline |
+| `/plan User auth with OAuth2` | Create a PLAN: task — AI breaks it into epics and tasks |
 | `/start PROJ-123` | Move an existing task to In Progress |
 | `/cancel PROJ-123` | Cancel a running pipeline |
 | `/status` | Show active pipelines and queue |
@@ -349,6 +393,7 @@ Or use `/status` in Telegram.
 | `AUTO_TRANSITION_ON_COMPLETE` | `In Review` | Parent status when all stages done (empty = disabled) |
 | `STAGE_BRANCH` | `stage` | Base branch for PRs |
 | `TRIGGER_STATUS` | `In Progress` | Jira status that triggers the pipeline |
+| `PLAN_PREFIX` | `PLAN:` | Title prefix that triggers planning pipeline instead of dev |
 
 See [.env.example](.env.example) for the full list including all status name overrides.
 

@@ -404,3 +404,79 @@ def build_stage_prompt(issue: dict, artifact_context: dict) -> str:
              "needs_tests": True, "safety_relevant": False,
              "main_files": []},
         )
+
+
+# ── Planning pipeline ─────────────────────────────────────────────────────────
+
+def build_plan_prompt(issue: dict) -> str:
+    """Build prompt for the planning pipeline (PLAN: prefix tasks).
+
+    Claude Code reads the codebase and breaks down a feature/project
+    description into epics and tasks, outputting structured JSON.
+    """
+    desc_text = issue.get('description_text', '')
+    summary = issue.get('summary', '')
+    epic_context = issue.get('epic_context', '')
+
+    context_section = ""
+    if epic_context:
+        context_section = (
+            "## Project/epic context\n"
+            f"{epic_context}\n\n"
+        )
+
+    return (
+        "## Planning task\n\n"
+        f"Feature/project: **{summary}**\n\n"
+        + context_section
+        + (f"## Description\n\n{desc_text}\n\n" if desc_text else "")
+        + "## Mandatory reading\n\n"
+        "Read these files (if they exist) to understand the project:\n"
+        "1. **CLAUDE.md** — project rules and conventions\n"
+        "2. **ARCHITECTURE.md** — project structure, components, "
+        "dependencies\n"
+        "3. **STEERING.md** — design principles, constraints\n\n"
+        "## What to do\n\n"
+        "Break down the feature/project described above into "
+        "**epics and tasks**. Each task should be small enough "
+        "for one dev pipeline run (a few hours of coding).\n\n"
+        "Study the codebase first:\n"
+        "- Understand the current architecture\n"
+        "- Identify which components need changes\n"
+        "- Find existing code that can be reused\n"
+        "- Consider dependencies between tasks\n\n"
+        "## Output format\n\n"
+        "Reply with ONLY a JSON object (no backticks, no markdown), "
+        "structured exactly like this:\n\n"
+        "{\n"
+        '  "epics": [\n'
+        "    {\n"
+        '      "title": "Epic title — short and clear",\n'
+        '      "description": "What this epic achieves, 2-3 sentences",\n'
+        '      "tasks": [\n'
+        "        {\n"
+        '          "title": "Task title — actionable, starts with verb",\n'
+        '          "description": "What exactly to do. Include: '
+        "which files to change, what the expected behavior is, "
+        'acceptance criteria. 3-5 sentences.",\n'
+        '          "labels": ["domain:api", "service:backend"]\n'
+        "        }\n"
+        "      ]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "## Rules\n\n"
+        "- Each epic = a logical group of related changes\n"
+        "- Each task = one focused unit of work (1 PR)\n"
+        "- Task titles start with a verb: "
+        '"Add...", "Fix...", "Implement...", "Refactor..."\n'
+        "- Task descriptions must have enough detail for Claude Code "
+        "to implement without asking questions\n"
+        "- Order tasks by dependency: independent tasks first, "
+        "dependent tasks later\n"
+        "- Include infrastructure/config tasks if needed "
+        "(DB migrations, new configs, etc.)\n"
+        "- Typically 2-5 epics, 2-6 tasks per epic\n"
+        "- Do NOT include testing as a separate task — "
+        "the dev pipeline adds tests automatically\n"
+    ).strip()
