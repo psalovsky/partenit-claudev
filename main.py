@@ -383,22 +383,25 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
         "created": time.time(),
     }
 
-    # 5. Pipeline-level concurrency
-    # Setup + artifact stages (sys-analysis, architecture) always run immediately.
-    # Only code stages (development, testing) are blocked by MAX_CONCURRENT_PIPELINES.
-    # This way queued tasks arrive at development with artifacts already done.
-    from config import ARTIFACT_STAGES, CODE_STAGES
+    # 5. Pipeline-level concurrency — two queues model:
+    #
+    #  ARTIFACT QUEUE (unlimited): setup, sys-analysis, architecture
+    #    → always run immediately for all tasks
+    #    → LLM classification/labeling also runs immediately
+    #
+    #  CODE QUEUE (MAX_CONCURRENT_PIPELINES): development, testing
+    #    → one pipeline at a time writes code
+    #    → when slot opens, artifacts are already done
+    #
+    #  active_pipelines tracks which parent tasks have running CODE stages.
+    from config import CODE_STAGES
 
     is_code_stage = is_subtask and stage in CODE_STAGES
 
-    if not is_subtask and stage is None and status_name == TRIGGER_STATUS:
-        # Parent setup task — always register and run (creates subtasks)
+    if is_code_stage:
+        # Code stage — check concurrency limit
         with lock:
-            active_pipelines.add(issue_key)
-    elif is_code_stage and parent_key not in active_pipelines:
-        # Code stage for a pipeline not in active set — check concurrency
-        with lock:
-            if len(active_pipelines) >= MAX_CONCURRENT_PIPELINES:
+            if parent_key not in active_pipelines and len(active_pipelines) >= MAX_CONCURRENT_PIPELINES:
                 pipeline_queue.append(job)
                 jobs[job_id] = job
                 logger.info("Code stage %s queued (position %d), active: %s",
@@ -409,9 +412,9 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
                     active_list = ", ".join(active_pipelines)
                     jira.add_comment(
                         issue_key,
-                        f"⏳ Task queued (position {len(pipeline_queue)}).\n"
-                        f"Active pipelines: {active_list}\n"
-                        "Will start automatically when a slot opens up.",
+                        f"⏳ Code stage queued (position {len(pipeline_queue)}).\n"
+                        f"Active code pipelines: {active_list}\n"
+                        "Artifacts are already done. Will start coding when a slot opens.",
                     )
                 except Exception:
                     pass
@@ -424,11 +427,7 @@ async def webhook_jira(request: Request, secret: str = "") -> Dict[str, Any]:
                 }
             else:
                 active_pipelines.add(parent_key)
-
-    # Subtask jobs: ensure parent is tracked
-    if is_subtask and parent_key not in active_pipelines:
-        with lock:
-            active_pipelines.add(parent_key)
+    # Setup + artifact stages: always run, no queue
 
     # 6. Launch worker
     _launch_job(job)

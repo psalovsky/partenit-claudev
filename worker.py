@@ -159,9 +159,19 @@ _RATE_LIMIT_MARKERS = ("rate limit", "429", "overloaded", "exceeded your current
 def _run_claude(prompt: str, work_dir: str, job: dict) -> subprocess.CompletedProcess:
     """Run Claude Code Opus via Popen; stores process in job["process"] for cancellation."""
     # Refresh OAuth token before each run (non-blocking)
+    # 1. Try our own refresh_token.py
     try:
         from refresh_token import main as _refresh_token
         _refresh_token()
+    except Exception:
+        pass
+    # 2. Warm up Claude CLI's built-in OAuth refresh
+    #    (claude --version doesn't trigger it, but a real prompt does)
+    try:
+        subprocess.run(
+            ["claude", "-p", "ok", "--max-turns", "1", "--output-format", "text"],
+            cwd=work_dir, capture_output=True, text=True, timeout=30,
+        )
     except Exception:
         pass
 
