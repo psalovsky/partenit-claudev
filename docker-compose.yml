@@ -6,8 +6,6 @@ services:
     ports:
       - "127.0.0.1:8090:8090"
     volumes:
-      # Claude Code auth (Max subscription) — copied from your machine
-      - ~/.claude:/root/.claude
       # Temp directory for repo clones and artifacts
       - /tmp/pipeline-work:/tmp/pipeline-work
     env_file: .env

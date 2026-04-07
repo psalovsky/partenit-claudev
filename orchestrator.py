@@ -48,7 +48,7 @@ def parse_adf_to_text(adf_json) -> str:
 
 
 def classify_issue(summary: str, description: str, labels: list) -> dict:
-    """Classify a task to adapt the Claude Code prompt."""
+    """Classify a task to adapt the worker LLM prompt (legacy single-stage flow)."""
     result = _call_llm(
         system=(
             "You are a task classifier for a software project.\n"
@@ -134,7 +134,7 @@ _VALID_LABELS = {
 
 
 def build_claude_prompt(issue: dict, classification: dict) -> str:
-    """Build prompt for Claude Code (legacy single-stage flow)."""
+    """Build prompt for the pipeline worker LLM (legacy flow; name kept for imports)."""
     safety_warning = ""
     if classification.get("safety_relevant"):
         safety_warning = (
@@ -175,10 +175,10 @@ def build_claude_prompt(issue: dict, classification: dict) -> str:
 
 
 def analyze_result(claude_output: str, changed_files: list) -> dict:
-    """Orchestrator LLM analyzes what Claude Code produced."""
+    """Orchestrator LLM analyzes worker stdout + changed files (ex-Claude Code pipeline)."""
     result = _call_llm(
         system=(
-            "Analyze the Claude Code output. Reply with JSON, no backticks:\n"
+            "Analyze the worker LLM output. Reply with JSON, no backticks:\n"
             '{"summary_ru":"2-3 sentences","files_changed":["..."],'
             '"tests_status":"passed|failed|unknown","concerns":["if any"]}'
         ),

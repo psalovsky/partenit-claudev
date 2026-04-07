@@ -1,8 +1,9 @@
 """
-Stage-specific Claude Code prompt builders.
+Stage-specific prompts for the pipeline worker LLM (default **deepseek-chat**).
 
-Each function receives the issue dict + enrichment context and returns
-a ready-to-use prompt string for `claude -p <prompt>`.
+Each function returns plain text sent to the worker HTTP API (with repo snapshot).
+Historically these strings were passed to **Claude Code** CLI — stronger models
+recommended for large refactors (see commented CLI block in ``worker.py``).
 
 Stages:
   sys-analysis  → produce SYSTEM_ANALYSIS.md artifact
@@ -56,11 +57,11 @@ def _pre_flight(stage: str, parent_key: str = "") -> str:
         "## Mandatory reading before starting\n\n"
         "Read these files IN FULL before writing anything "
         "(if they exist in the repo):\n\n"
-        "1. **CLAUDE.md** — project rules, conventions, "
+        "1. **CLAUDE.md** (or `docs/governance/CLAUDE.md`) — project rules, conventions, "
         "priorities for AI assistants\n"
-        "2. **ARCHITECTURE.md** — project structure, components, "
+        "2. **ARCHITECTURE.md** (or `docs/architecture/ARCHITECTURE.md`) — project structure, components, "
         "dependencies, data flows\n"
-        "3. **STEERING.md** — design principles, constraints, "
+        "3. **STEERING.md** (or `docs/governance/STEERING.md`) — design principles, constraints, "
         "things that must not be changed\n"
     )
 
@@ -80,6 +81,112 @@ def _pre_flight(stage: str, parent_key: str = "") -> str:
         )
 
     return base_files + "\n"
+
+
+# ── BOOTSTRAP stages (greenfield) ─────────────────────────────────────────────
+
+def build_bootstrap_product_framing_prompt(issue: dict) -> str:
+    return (
+        _base_header(issue)
+        + _pre_flight(issue.get("stage", ""))
+        + "## BOOTSTRAP Stage 1: Product framing\n\n"
+        "Analyze the idea and generate `docs/product/PRODUCT_BRIEF.md`.\n\n"
+        "Include:\n"
+        "- product vision\n"
+        "- target users\n"
+        "- use cases\n"
+        "- MVP scope\n"
+        "- non-goals\n"
+        "- constraints (tech, infra, deployment)\n"
+        "- success metrics\n\n"
+        "Output format:\n"
+        "Return ONLY JSON (no backticks, no prose) of the form:\n"
+        "{\n"
+        "  \"files\": {\n"
+        "    \"docs/product/PRODUCT_BRIEF.md\": \"<markdown>\"\n"
+        "  }\n"
+        "}\n"
+    ).strip()
+
+
+def build_bootstrap_architecture_baseline_prompt(issue: dict) -> str:
+    return (
+        _base_header(issue)
+        + _pre_flight(issue.get("stage", ""))
+        + "## BOOTSTRAP Stage 2: Architecture baseline\n\n"
+        "Based on PRODUCT_BRIEF, design a baseline architecture and governance rules.\n\n"
+        "Generate these files:\n"
+        "- `docs/architecture/ARCHITECTURE.md`\n"
+        "- `docs/governance/STEERING.md`\n"
+        "- `docs/governance/CLAUDE.md`\n\n"
+        "STEERING.md MUST include strict rules (forbidden patterns, constraints).\n"
+        "CLAUDE.md MUST contain AI coding rules (allowed changes, style, test rules).\n\n"
+        "Output format:\n"
+        "Return ONLY JSON (no backticks, no prose):\n"
+        "{\n"
+        "  \"files\": {\n"
+        "    \"docs/architecture/ARCHITECTURE.md\": \"<markdown>\",\n"
+        "    \"docs/governance/STEERING.md\": \"<markdown>\",\n"
+        "    \"docs/governance/CLAUDE.md\": \"<markdown>\"\n"
+        "  }\n"
+        "}\n"
+    ).strip()
+
+
+def build_bootstrap_repo_scaffold_prompt(issue: dict) -> str:
+    return (
+        _base_header(issue)
+        + _pre_flight(issue.get("stage", ""))
+        + _coding_standards()
+        + "## BOOTSTRAP Stage 3: Repository scaffold\n\n"
+        "Create an initial repository structure for a greenfield project.\n\n"
+        "Requirements:\n"
+        "- FastAPI app skeleton\n"
+        "- Docker setup (Dockerfile + docker-compose)\n"
+        "- Basic tests (pytest)\n"
+        "- Config files\n"
+        "- CI pipeline (GitHub Actions) if reasonable\n"
+        "- Folder structure:\n"
+        "  - `src/api`, `src/core`, `src/services`, `src/models`\n"
+        "  - `tests/`\n"
+        "  - `docs/`\n"
+        "  - `docker/`\n"
+        "- Add/Update `README.md` with how to run.\n\n"
+        "IMPORTANT: You MUST output a single unified diff that can be applied with `git apply`.\n"
+        "Output ONLY the diff, starting with `diff --git` lines.\n"
+    ).strip()
+
+
+def build_bootstrap_work_breakdown_prompt(issue: dict) -> str:
+    return (
+        "## BOOTSTRAP Stage 4: Work breakdown\n\n"
+        f"Project: **{issue.get('parent_summary', issue.get('summary',''))}**\n\n"
+        + (f"## Description\n\n{issue.get('description_text','')}\n\n" if issue.get("description_text") else "")
+        + "Use PRODUCT_BRIEF and ARCHITECTURE baseline (from repo snapshot) to propose:\n"
+        "- epics\n"
+        "- stories\n"
+        "- tasks\n\n"
+        "Each task must be small, testable, and mapped to architecture components.\n\n"
+        "Output format:\n"
+        "Return ONLY JSON (no backticks, no prose) of the form:\n"
+        "{\n"
+        "  \"epics\": [\n"
+        "    {\n"
+        "      \"title\": \"...\",\n"
+        "      \"description\": \"...\",\n"
+        "      \"stories\": [\n"
+        "        {\n"
+        "          \"title\": \"...\",\n"
+        "          \"description\": \"...\",\n"
+        "          \"tasks\": [\n"
+        "            {\"title\":\"...\",\"description\":\"...\",\"labels\":[\"...\"]}\n"
+        "          ]\n"
+        "        }\n"
+        "      ]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    ).strip()
 
 
 def _coding_standards() -> str:
@@ -396,6 +503,14 @@ def build_stage_prompt(issue: dict, artifact_context: dict) -> str:
         return build_architecture_prompt(
             issue, sys_analysis=sys_analysis
         )
+    elif stage == "bootstrap-product-framing":
+        return build_bootstrap_product_framing_prompt(issue)
+    elif stage == "bootstrap-architecture-baseline":
+        return build_bootstrap_architecture_baseline_prompt(issue)
+    elif stage == "bootstrap-repo-scaffold":
+        return build_bootstrap_repo_scaffold_prompt(issue)
+    elif stage == "bootstrap-work-breakdown":
+        return build_bootstrap_work_breakdown_prompt(issue)
     elif stage == "development":
         return build_development_prompt(
             issue, sys_analysis=sys_analysis,
@@ -421,8 +536,8 @@ def build_stage_prompt(issue: dict, artifact_context: dict) -> str:
 def build_plan_prompt(issue: dict) -> str:
     """Build prompt for the planning pipeline (PLAN: prefix tasks).
 
-    Claude Code reads the codebase and breaks down a feature/project
-    description into epics and tasks, outputting structured JSON.
+    Worker LLM reads the repo snapshot in the prompt and breaks down the feature
+    into epics/tasks (JSON). Formerly **Claude Code** read files via tools.
     """
     desc_text = issue.get('description_text', '')
     summary = issue.get('summary', '')
@@ -503,7 +618,7 @@ def build_plan_prompt(issue: dict) -> str:
         "- Each task = one focused unit of work (1 PR)\n"
         "- Task titles start with a verb: "
         '"Add...", "Fix...", "Implement...", "Refactor..."\n'
-        "- Task descriptions must have enough detail for Claude Code "
+        "- Task descriptions must have enough detail for the dev pipeline "
         "to implement without asking questions\n"
         "- Order tasks by dependency: independent tasks first, "
         "dependent tasks later\n"

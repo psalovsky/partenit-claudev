@@ -22,6 +22,7 @@ from config import (
     STATUS_DONE,
     STATUS_IN_PROGRESS,
     ALL_STAGES,
+    BOOTSTRAP_STAGES,
 )
 from jira_client import _status_matches
 
@@ -134,7 +135,11 @@ def trigger_next_stages(
 
 
 def all_stages_done(parent_key: str, jira) -> bool:
-    """Return True if all pipeline stages for this parent are Done."""
+    """Return True if all pipeline stages for this parent are Done.
+
+    Detects whether the parent is a BOOTSTRAP pipeline by checking if any
+    subtask stage starts with "bootstrap-".
+    """
     subtasks = jira.get_subtasks(parent_key)
     stage_status: dict[str, str] = {}
     for sub in subtasks:
@@ -142,7 +147,8 @@ def all_stages_done(parent_key: str, jira) -> bool:
         if s:
             stage_status[s] = status
 
-    for stage in ALL_STAGES:
+    required = BOOTSTRAP_STAGES if any(s.startswith("bootstrap-") for s in stage_status) else ALL_STAGES
+    for stage in required:
         if stage not in stage_status:
             return False  # subtask missing → not done
         if not _status_matches(stage_status[stage], STATUS_DONE):
