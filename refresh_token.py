@@ -1,13 +1,10 @@
-"""Auto-refresh OAuth token for Claude Code in Docker/CI.
+"""Optional: refresh Anthropic OAuth for local ``~/.claude`` (legacy CLI).
 
-Claude Code CLI uses OAuth tokens (Max/Pro subscription) that expire
-after ~24h. This script checks the token and refreshes it before it
-expires, so the pipeline never gets 401 errors.
+The default pipeline uses **deepseek-chat** over HTTP only; this script is not
+required. Keep it if you restore **Claude Code** CLI (see commented block in
+``worker.py``) and mount ``~/.claude`` in Docker.
 
-Called from:
-  - entrypoint.sh (on container start)
-  - worker._run_claude() (before each Claude Code invocation)
-  - Background loop (every 30 min while container is alive)
+Called from entrypoint only when that legacy stack is enabled.
 
 Non-blocking: if refresh fails, continues with existing token.
 """

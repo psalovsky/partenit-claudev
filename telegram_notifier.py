@@ -144,7 +144,7 @@ def _cmd_new_task(chat_id: str, summary: str) -> dict:
 
 
 def _cmd_plan_task(chat_id: str, description: str) -> dict:
-    """Create a PLAN: task — Claude Code will break it into epics and tasks."""
+    """Create a PLAN: task — worker LLM (default deepseek-chat) breaks it into epics/tasks."""
     if not description:
         _reply(chat_id,
                "Usage: /plan <feature description>\n"
@@ -181,7 +181,7 @@ def _cmd_plan_task(chat_id: str, description: str) -> dict:
         chat_id,
         f"📝 <b>Planning task created!</b>\n"
         f"<a href='{jira_url}'>{issue_key}</a>: {summary}\n"
-        f"Claude Code will analyze the codebase and create epics + tasks."
+        f"Worker LLM will analyze the codebase and create epics + tasks."
     )
     return {"ok": True, "action": "plan_task", "issue_key": issue_key}
 
@@ -330,7 +330,7 @@ def notify_stage_started(stage: str, issue_key: str, parent_key: str,
         f"{emoji} <b>{name} — started</b>\n"
         f"Task: <a href='https://{jira_domain}/browse/{parent_key}'>{parent_key}</a>\n"
         f"Subtask: <a href='{url}'>{issue_key}</a>\n"
-        f"Claude Code is working..."
+        f"Worker LLM is working..."
     )
 
 

@@ -1,14 +1,9 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+# Git only — pipeline worker uses HTTP LLM (default deepseek-chat), not Claude Code CLI.
+# To restore Anthropic CLI: add Node + npm i -g @anthropic-ai/claude-code (see worker.py comments).
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-# Node.js + Claude Code CLI
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g @anthropic-ai/claude-code
-
-# Git config for automated commits
 RUN git config --global user.name "Claudev" && \
     git config --global user.email "claudev@noreply.github.com"
 
@@ -19,8 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN chmod +x entrypoint.sh
+EXPOSE 8090
 
-EXPOSE 8080
-
-ENTRYPOINT ["./entrypoint.sh"]
+# Direct Python entry avoids ./entrypoint.sh failing on Windows CRLF in the shell script.
+CMD ["python", "main.py"]
